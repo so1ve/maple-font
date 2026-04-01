@@ -10,7 +10,8 @@ import time
 from functools import partial
 from os import environ, getcwd, listdir, makedirs, path, remove, getenv
 from typing import Callable, Literal
-from fontTools.ttLib import TTFont, newTable
+from fontTools.ttLib import TTFont
+from fontTools.ttLib.tables._m_e_t_a import table__m_e_t_a
 from fontTools.feaLib.builder import addOpenTypeFeatures, addOpenTypeFeaturesFromString
 from ttfautohint import StemWidthMode, ttfautohint
 from source.py.transform import change_glyph_width_or_scale, smart_change_width
@@ -18,6 +19,7 @@ from source.py.utils import (
     add_gasp,
     add_ital_axis_to_stat,
     adjust_line_height,
+    alias_codepoints,
     check_font_patcher,
     check_directory_hash,
     parse_style_name,
@@ -138,7 +140,7 @@ def parse_args(args: list[str] | None = None):
     feature_group.add_argument(
         "--feat",
         type=lambda x: x.strip().split(","),
-        help="Freeze font features, splited by `,` (e.g. `--feat zero,cv01,ss07,ss08`). No effect on variable format",
+        help="Freeze font features, split by `,` (e.g. `--feat zero,cv01,ss07,ss08`). No effect on variable format",
     )
     feature_group.add_argument(
         "--apply-fea-file",
@@ -198,7 +200,7 @@ def parse_args(args: list[str] | None = None):
     feature_group.add_argument(
         "--line-height",
         type=float,
-        help="Scale factor for line height (e.g. 1.1)",
+        help="Scale factor for line height (e.g., 1.1)",
     )
     feature_group.add_argument(
         "--width",
@@ -220,7 +222,7 @@ def parse_args(args: list[str] | None = None):
     feature_group.add_argument(
         "--cn-narrow",
         action="store_true",
-        help="Make CN / JP characters narrow (And the font cannot be recogized as monospaced font)",
+        help="Make CN / JP characters narrow (And the font cannot be recognized as a monospaced font)",
     )
     feature_group.add_argument(
         "--cn-scale-factor",
@@ -244,7 +246,7 @@ def parse_args(args: list[str] | None = None):
         dest="nerd_font",
         default=None,
         action="store_false",
-        help="Do not build Nerd-Font version",
+        help="Do not build the Nerd-Font version",
     )
     cn_group = build_group.add_mutually_exclusive_group()
     cn_group.add_argument(
@@ -284,7 +286,7 @@ def parse_args(args: list[str] | None = None):
     build_group.add_argument(
         "--cache",
         action="store_true",
-        help="Reuse font cache of TTF, OTF and Woff2 formats",
+        help="Reuse font cache of TTF, OTF, and Woff2 formats",
     )
     build_group.add_argument(
         "--cn-rebuild",
@@ -294,7 +296,7 @@ def parse_args(args: list[str] | None = None):
     build_group.add_argument(
         "--archive",
         action="store_true",
-        help="Build font archives with config and license. If has `--cache` flag, only archive NF and CN formats",
+        help="Build font archives with config and license. If it has the `--cache` flag, only archive NF and CN formats",
     )
 
     return parser.parse_args(args)
@@ -490,7 +492,7 @@ class FontConfig:
         if args.remove_tag_liga:
             self.remove_tag_liga = True
 
-        if args.width:
+        if args.width and args.width != "default":
             self.width = args.width
 
         if args.line_height is not None:
@@ -503,8 +505,6 @@ class FontConfig:
         """Apply Nerd Font specific arguments."""
         if self.debug:
             self.nerd_font["enable"] = False
-        if args.nerd_font is not None:
-            self.nerd_font["enable"] = args.nerd_font
 
         if args.nf_mono:
             self.nerd_font["mono"] = args.nf_mono
@@ -513,6 +513,9 @@ class FontConfig:
         if args.nf_propo:
             self.nerd_font["propo"] = args.nf_propo
             self.nerd_font["enable"] = True
+
+        if args.nerd_font is not None:
+            self.nerd_font["enable"] = args.nerd_font
 
     def _apply_cn_options(self, args):
         """Apply Chinese font related arguments."""
@@ -1181,18 +1184,27 @@ def build_nf_by_prebuild_nerd_font(
     suffix = font_config.get_nf_suffix()
     if suffix:
         suffix = "-" + suffix
-    result = merge_ttfonts(
-        base_font_path=joinPaths(build_option.ttf_base_dir, font_basename),
-        extra_font_path=f"{build_option.src_dir}/MapleMono-NF-Base{suffix}.ttf",
-    )
 
+    nf_base_font_path = f"{build_option.src_dir}/MapleMono-NF-Base{suffix}.ttf"
+    tmp_target_path = None
     if font_config.get_width_name():
+        tmp_font = TTFont(nf_base_font_path)
         smart_change_width(
-            font=result,
+            font=tmp_font,
             target_width=font_config.get_target_width(),
             original_ref_width=font_config.glyph_width,
             also_scale_y=True,
         )
+        tmp_target_path = f"{build_option.output_dir}/NF-Base-{font_basename}"
+        tmp_font.save(tmp_target_path)
+
+    result = merge_ttfonts(
+        base_font_path=joinPaths(build_option.ttf_base_dir, font_basename),
+        extra_font_path=tmp_target_path or nf_base_font_path,
+    )
+
+    if tmp_target_path is not None:
+        remove(tmp_target_path)
 
     return result
 
@@ -1341,21 +1353,11 @@ def build_cn(f: str, font_config: FontConfig, build_option: BuildOption):
         preferred_style_name=style_in_17,
     )
 
-    cn_font["OS/2"].xAvgCharWidth = 600  # type: ignore
+    cn_font["OS/2"].xAvgCharWidth = font_config.get_target_width()  # type: ignore
 
     # https://github.com/subframe7536/maple-font/issues/188
     # https://github.com/subframe7536/maple-font/issues/313
     # fix_cn_cv(cn_font)
-
-    font_config.patch_font_feature(
-        font=cn_font,
-        issue_fea_dir=build_option.output_dir,
-        is_italic=is_italic,
-        is_cn=True,
-        is_variable=False,
-        is_hinted=font_config.use_hinted,
-        fea_path=build_option.get_feature_file_path(is_italic, True),
-    )
 
     target_width = (
         font_config.glyph_width_cn_narrow if font_config.cn["narrow"] else None
@@ -1378,7 +1380,7 @@ def build_cn(f: str, font_config: FontConfig, build_option: BuildOption):
         # Change glyph width and keep monospace identifier will cause
         # Intellij IDEA / Windows Notepad and other applications to
         # render the font incorrectly. See details in #249
-        if target_width:
+        if target_width and font_config.get_width_name() != "slim":
             cn_font["post"].isFixedPitch = False  # type: ignore
             cn_font["OS/2"].panose.bProportion = 0  # type: ignore
             cn_font["OS/2"].panose.bSpacing = 0  # type: ignore
@@ -1419,7 +1421,7 @@ def build_cn(f: str, font_config: FontConfig, build_option: BuildOption):
         cn_font["OS/2"].ulCodePageRange1 = 1 << 0 | 1 << 17 | 1 << 18 | 1 << 20  # type: ignore
 
         # fix meta table, https://learn.microsoft.com/en-us/typography/opentype/spec/meta
-        meta = newTable("meta")
+        meta = table__m_e_t_a("meta")
         meta.data = {
             "dlng": "Latn, Hans, Hant, Jpan",
             "slng": "Latn, Hans, Hant, Jpan",
@@ -1427,6 +1429,16 @@ def build_cn(f: str, font_config: FontConfig, build_option: BuildOption):
         cn_font["meta"] = meta
 
     adjust_line_height(cn_font, font_config.line_height, font_config.vertical_metric)
+
+    font_config.patch_font_feature(
+        font=cn_font,
+        issue_fea_dir=build_option.output_dir,
+        is_italic=is_italic,
+        is_cn=True,
+        is_variable=False,
+        is_hinted=font_config.use_hinted,
+        fea_path=build_option.get_feature_file_path(is_italic, True),
+    )
 
     if not (
         (
@@ -1505,6 +1517,8 @@ def build_variable_fonts(font_config: FontConfig, build_option: BuildOption):
                 input_file.replace(".ttf", ".glyphs").replace("-VF", "")
             ),
         )
+
+        alias_codepoints(font=font)
 
         if font_config.get_width_name():
             smart_change_width(
