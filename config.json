@@ -53,7 +53,7 @@
     "cv65": "enable",
     "cv66": "ignore",
     "cv96": "enable",
-    "cv97": "enable",
+    "cv97": "ignore",
     "cv98": "enable",
     "cv99": "ignore",
     "ss01": "ignore",
