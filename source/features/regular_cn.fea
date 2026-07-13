@@ -51,6 +51,7 @@ languagesystem latn CAT;
 feature aalt {
 
   feature locl;
+  feature cpct;
   feature case;
   feature sinf;
   feature subs;
@@ -190,6 +191,12 @@ feature locl {
   lookup PunctuationTW;
 
 } locl;
+
+feature cpct {
+
+  lookup PunctuationTW;
+
+} cpct;
 
 feature case {
 

@@ -20,6 +20,12 @@ feature locl {
 
 } locl;
 
+feature cpct {
+
+  lookup PunctuationTW;
+
+} cpct;
+
 feature ccmp {
 
   lookup ccmp_jp {
